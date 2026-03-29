@@ -3,14 +3,14 @@ services:
     image: ghcr.io/alams154/music-assistant-skill:latest
     environment:
       - SKILL_HOSTNAME=<hostname> #required
-      - MA_HOSTNAME=<hostname> #optional, if only using APL devices
+      - MA_HOSTNAME=homeassistantPi #optional, if only using APL devices
       - APP_USERNAME=/run/secrets/APP_USERNAME #optional
       - APP_PASSWORD=/run/secrets/APP_PASSWORD #optional
       - PORT=5000 #optional
       - DEBUG_PORT=5678 #optional
-      - LOCALE=en-US # optional: skill locale (e.g. en-US, en-GB, de-DE)
-      - AWS_DEFAULT_REGION=us-east-1 #optional
-      - TZ=America/Chicago # set container timezone (override as needed)
+      - LOCALE=es-ES # optional: skill locale (e.g. en-US, en-GB, de-DE)
+      - AWS_DEFAULT_REGION=eu-west-1 #optional
+      - TZ=Europe/Madrid # set container timezone (override as needed)
     secrets:
       - APP_USERNAME
       - APP_PASSWORD
