@@ -2,16 +2,14 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Instalar Python 3.12, git, jq y Node.js 20 LTS
+# Instalar Python 3.12, git, jq, Node.js y npm desde los repositorios oficiales de Ubuntu
 RUN apt-get update && \
-    apt-get install -y python3 python3-venv python3-pip libssl-dev git jq curl gnupg ca-certificates && \
-    curl -fsSL https://nodesource.com | bash - && \
-    apt-get install -y nodejs && \
+    apt-get install -y python3 python3-venv python3-pip libssl-dev git jq curl ca-certificates nodejs npm && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Clonar el repositorio para obtener app, assets y scripts sin depender del contexto local
+# Clonar el repositorio para obtener app, assets y scripts
 RUN git clone https://github.com /tmp/repo && \
     cp -r /tmp/repo/app /app/src && \
     cp -r /tmp/repo/app /app/app && \
@@ -20,7 +18,7 @@ RUN git clone https://github.com /tmp/repo && \
     rm -rf /tmp/repo && \
     chmod +x /app/scripts/ask_create_skill.sh || true
 
-# Instalar dependencias en entorno virtual
+# Instalar dependencias de Python en entorno virtual
 RUN python3 -m venv venv && \
     . venv/bin/activate && \
     pip install --upgrade pip && \
@@ -65,7 +63,7 @@ PY
 # Instalar ASK CLI (v2) globalmente
 RUN npm install -g ask-cli || true
 
-# Persistir credenciales de ASK CLI en /data/.ask (almacenamiento persistente de HA)
+# Persistir credenciales de ASK CLI en /data/.ask (almacenamiento persistente de Home Assistant)
 RUN mkdir -p /data/.ask && ln -s /data/.ask /root/.ask
 
 # Script de arranque que lee /data/options.json de Home Assistant
@@ -92,3 +90,4 @@ fi\n' > /app/run.sh && chmod +x /app/run.sh
 EXPOSE 5000
 
 CMD ["/app/run.sh"]
+
