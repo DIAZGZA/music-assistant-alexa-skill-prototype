@@ -24,12 +24,50 @@ from setup_helpers import sanitize_log, enqueue_setup_log, setup_reader_thread a
 from setup_helpers import ask_home_from_credentials_dir, has_functional_cli_config, prepare_cli_config_for_configure
 from signal_helpers import register_signal_handlers
 
+
+def _load_addon_options_into_env():
+    """Load Home Assistant add-on options from /data/options.json."""
+    options_path = '/data/options.json'
+    try:
+        if not os.path.exists(options_path):
+            return {}
+        with open(options_path, 'r', encoding='utf-8') as f:
+            options = json.load(f)
+        if not isinstance(options, dict):
+            return {}
+
+        loaded = {}
+        for key, value in options.items():
+            if value is None:
+                continue
+            os.environ[str(key)] = str(value)
+            loaded[str(key)] = str(value)
+        return loaded
+    except Exception:
+        return {}
+
+
+def _safe_options_for_log(options):
+    redacted = {}
+    secret_keys = {'APP_USERNAME', 'APP_PASSWORD'}
+    for key, value in options.items():
+        if key in secret_keys:
+            redacted[key] = 'set' if value else ''
+        else:
+            redacted[key] = value
+    return redacted
+
+
+_loaded_addon_options = _load_addon_options_into_env()
+
 # Ensure boto3 has a default region in container/dev environments to avoid
 # NoRegionError during imports that create AWS clients at module import time.
-os.environ.setdefault('AWS_REGION', os.environ.get('AWS_REGION', 'us-east-1'))
+os.environ.setdefault('AWS_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
 os.environ.setdefault('AWS_DEFAULT_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
 
 app = Flask(__name__)
+if _loaded_addon_options:
+    app.logger.info('Loaded add-on options from /data/options.json: %s', _safe_options_for_log(_loaded_addon_options))
 # Optionally silence HTTP request logs (werkzeug/urllib3) when running
 # in container or debugger. Set QUIET_HTTP=0 to keep request logging.
 try:
@@ -52,9 +90,15 @@ try:
         app.logger.info('Using ASK credentials under HOME=%s', ask_home)
 except Exception:
     pass
+# Without a skill ID ask-sdk skips the check that a request is meant for this skill.
+sb.skill_id = os.environ.get('SKILL_ID', '')
+if not sb.skill_id:
+    # The setup page creates the skill, so a first run has no ID yet.
+    app.logger.warning('SKILL_ID is not set: accepting signed requests for any skill')
+app.config['ALEXA_SKILL'] = sb.create()   # the simulator page runs requests on it
 skill_adapter = SkillAdapter(
-    skill=sb.create(),
-    skill_id="", # pyright: ignore[reportArgumentType]
+    skill=app.config['ALEXA_SKILL'],
+    skill_id=sb.skill_id,
     app=app)
 
 # Mount the Music Assistant API (only ma routes will be mounted at /ma)
@@ -78,7 +122,7 @@ class BasicAuthMiddleware:
         pwd = get_env_secret('APP_PASSWORD')
         if not user and not pwd:
             return self.app(environ, start_response)
-    
+
         auth = environ.get('HTTP_AUTHORIZATION')
         if auth and auth.startswith('Basic '):
             try:
@@ -93,28 +137,6 @@ class BasicAuthMiddleware:
         start_response('401 Unauthorized', [('Content-Type', 'text/plain'), ('WWW-Authenticate', 'Basic realm="music-assistant-skill"')])
         return [b'Access denied']
 
-
-@app.before_request
-def _inject_simulator_signature_headers():
-    """If the incoming request is from the simulator and lacks Alexa
-    signature headers, allow simulator-provided fallbacks to be injected so
-    the ask-sdk verifier sees them. This is intended for local development
-    only.
-    """
-    try:
-        if request.path == '/' and request.method == 'POST':
-            # If real Signature headers are missing, accept simulator fallbacks
-            env = request.environ
-            if not request.headers.get('Signature'):
-                sim_sig = request.headers.get('X-Simulator-Signature') or request.args.get('sim_signature')
-                if sim_sig:
-                    env['HTTP_SIGNATURE'] = sim_sig
-            if not request.headers.get('SignatureCertChainUrl'):
-                sim_cert = request.headers.get('X-Simulator-CertUrl') or request.args.get('sim_cert')
-                if sim_cert:
-                    env['HTTP_SIGNATURECERTCHAINURL'] = sim_cert
-    except Exception:
-        pass
 
 # Respect X-Forwarded-* headers when running behind a reverse proxy so
 # `request.host_url` and `request.scheme` reflect the external client URL.
@@ -222,10 +244,11 @@ app.config['INTENT_LOGS_MAXLEN'] = 500
 
 # Register endpoint blueprints moved out of app.py (status, invocations, simulator)
 try:
-    from endpoints import status_bp, invocations_bp, simulator_bp
+    from endpoints import status_bp, invocations_bp, simulator_bp, devices_bp
     app.register_blueprint(status_bp)
     app.register_blueprint(invocations_bp)
     app.register_blueprint(simulator_bp)
+    app.register_blueprint(devices_bp)
 except Exception:
     app.logger.exception('Could not register endpoints blueprints (may be running in partial state)')
 
@@ -263,26 +286,6 @@ def _read_master_loop(master_fd, prefix=None):
 
 @app.route("/", methods=["POST"])
 def invoke_skill():
-    # Allow simulator-originated requests to bypass signature/timestamp
-    # verification for local testing when the simulator provides a
-    # simulator-specific header. This creates a temporary handler with
-    # verification disabled and dispatches the request through it. For
-    # normal requests we keep the existing behavior.
-    try:
-        if request.headers.get('X-Simulator-Bypass') or request.headers.get('X-Simulator-Signature'):
-            try:
-                from ask_sdk_webservice_support.webservice_handler import WebserviceSkillHandler
-                from ask_sdk_webservice_support import verifier_constants
-                content = request.data.decode(verifier_constants.CHARACTER_ENCODING)
-                handler = WebserviceSkillHandler(skill_adapter._skill, verify_signature=False, verify_timestamp=False, verifiers=[])
-                response = handler.verify_request_and_dispatch(http_request_headers=request.headers, http_request_body=content)
-                return jsonify(response)
-            except Exception:
-                app.logger.exception('Simulator dispatch without verification failed')
-                # fallthrough to normal dispatch
-                pass
-    except Exception:
-        pass
     return skill_adapter.dispatch_request()
 
 # Expose OpenAPI spec and Swagger UI from the main app so docs are available
@@ -700,7 +703,7 @@ if __name__ == "__main__":
     flask_debug = os.environ.get('FLASK_DEBUG', '0') == '1'
     if flask_debug:
         use_reloader = os.environ.get('FLASK_RELOADER', '0') == '1'
-        app.run(debug=True, use_reloader=use_reloader, host="0.0.0.0", port=port)
+        app.run(debug=True, use_reloader=use_reloader, host=os.environ.get('HOST', '0.0.0.0'), port=port)
     else:
         # Production/dev host mode: don't use the reloader to avoid transient restarts
-        app.run(debug=False, host="0.0.0.0", port=port)
+        app.run(debug=False, host=os.environ.get('HOST', '0.0.0.0'), port=port)
