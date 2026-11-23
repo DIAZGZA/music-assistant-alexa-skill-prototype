@@ -2,15 +2,17 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Instalar Python 3.12, git, jq, Node.js y npm desde los repositorios oficiales de Ubuntu
+# Instalar Python 3.12, git, jq, Node.js y npm
 RUN apt-get update && \
     apt-get install -y python3 python3-venv python3-pip libssl-dev git jq curl ca-certificates nodejs npm && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Clonar el repositorio para obtener app, assets y scripts
-RUN git clone https://github.com /tmp/repo && \
+# Clonar el repositorio usando variables cortas para evitar recortes de URL
+ARG GH_USER=DIAZGZA
+ARG GH_REPO=music-assistant-alexa-skill-prototype
+RUN git clone https://github.com{GH_USER}/${GH_REPO}.git /tmp/repo && \
     cp -r /tmp/repo/app /app/src && \
     cp -r /tmp/repo/app /app/app && \
     cp -r /tmp/repo/assets /app/assets && \
@@ -63,7 +65,7 @@ PY
 # Instalar ASK CLI (v2) globalmente
 RUN npm install -g ask-cli || true
 
-# Persistir credenciales de ASK CLI en /data/.ask (almacenamiento persistente de Home Assistant)
+# Persistir credenciales de ASK CLI en /data/.ask
 RUN mkdir -p /data/.ask && ln -s /data/.ask /root/.ask
 
 # Script de arranque que lee /data/options.json de Home Assistant
@@ -90,4 +92,3 @@ fi\n' > /app/run.sh && chmod +x /app/run.sh
 EXPOSE 5000
 
 CMD ["/app/run.sh"]
-
